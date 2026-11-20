@@ -1,0 +1,441 @@
+<title>Boss Battle</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap">
+<style>
+/* Layout: one-screen portrait game. Pixel arena canvas on top, hideable test panel below. Single dark look on purpose. */
+:root {
+  --bg: #12141c;
+  --panel: #1c2030;
+  --line: #343b55;
+  --fg: #e9ecf5;
+  --muted: #9aa3bd;
+  --accent: #ffcf4a;
+  --hp: #e0483e;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  padding-block: 0;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.app {
+  height: 100%;
+  max-width: 460px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-block: 8px;
+}
+canvas {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: #171a26;
+  border: 2px solid var(--line);
+  touch-action: manipulation;
+}
+.panel {
+  flex: none;
+  max-height: 46%;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: var(--panel);
+  border: 2px solid var(--line);
+}
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row label { font-size: 12px; color: var(--muted); }
+.row input { flex: 1 1 110px; min-width: 0; }
+input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  font-size: 16px;
+  min-height: 40px;
+}
+button {
+  background: #2b3250;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  padding: 8px 12px;
+  min-height: 40px;
+  font: 600 13px var(--font-ui);
+  cursor: pointer;
+}
+button.primary { background: var(--accent); color: #1a1405; border-color: var(--accent); }
+button.danger { background: #3a1f26; border-color: #6b2f3a; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hint { margin: 0; font-size: 11px; line-height: 1.4; color: var(--muted); }
+</style>
+
+<div class="app">
+  <canvas id="game" width="360" height="600" aria-label="Boss battle arena"></canvas>
+  <section class="panel" id="panel" aria-label="Test controls">
+    <div class="row">
+      <label for="name">Viewer</label>
+      <input id="name" value="viewer1" maxlength="14" autocomplete="off">
+    </div>
+    <div class="row">
+      <button id="b1" type="button">+1 like</button>
+      <button id="b10" type="button" class="primary">+10 likes</button>
+      <button id="b50" type="button">+50 likes</button>
+    </div>
+    <div class="row">
+      <button id="rand" type="button">Random viewer +10</button>
+      <button id="crowd" type="button">Add 10 viewers</button>
+    </div>
+    <div class="row">
+      <label for="maxhp">Boss HP</label>
+      <input id="maxhp" type="number" inputmode="numeric" min="1" max="100000" value="100">
+      <button id="newboss" type="button">New boss</button>
+    </div>
+    <div class="row">
+      <label for="tt">TikTok</label>
+      <input id="tt" placeholder="your username, no @" autocomplete="off" autocapitalize="off">
+      <button id="connect" type="button" class="primary">Connect</button>
+    </div>
+    <p class="hint" id="status">Not connected. The test buttons still work.</p>
+    <div class="row">
+      <button id="reset" type="button" class="danger">Reset all</button>
+    </div>
+    <p class="hint">Double-tap the arena to hide or show this panel. Likes from your LIVE arrive once you tap Connect.</p>
+  </section>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var W = 360, H = 600, ATTACK = 1, CAP = 35, COLS = 7;
+  var cv = document.getElementById('game');
+  var g = cv.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  var PIX = '"Press Start 2P", ui-monospace, Menlo, Consolas, monospace';
+  try { if (document.fonts) document.fonts.load('8px "Press Start 2P"'); } catch (e) {}
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var C = { bg: '#171a26', ground: '#232842', line: '#343b55', fg: '#e9ecf5', muted: '#9aa3bd', accent: '#ffcf4a', hp: '#e0483e', hpBack: '#3a1f26' };
+
+  // 16x16 boss sprite. H horn, B body, W eye white, K pupil, M mouth, T teeth, F feet
+  var SPR = [
+    '..H..........H..',
+    '..HH........HH..',
+    '..HHH......HHH..',
+    '...BBBBBBBBBB...',
+    '..BBBBBBBBBBBB..',
+    '.BBBWWBBBBWWBBB.',
+    '.BBBWKBBBBKWBBB.',
+    '.BBBBBBBBBBBBBB.',
+    'BBBBBBBBBBBBBBBB',
+    'BBBBMMMMMMMMBBBB',
+    'BBBBMTMTMTMTBBBB',
+    'BBBBMMMMMMMMBBBB',
+    '.BBBBBBBBBBBBBB.',
+    '..BBBB....BBBB..',
+    '..BBBB....BBBB..',
+    '..FFFF....FFFF..'
+  ];
+  var PAL = { H: '#e8dcc0', B: '#4f9a5e', W: '#f4f4ee', K: '#c0281f', M: '#2a0f14', T: '#f2ead8', F: '#2f6a3c' };
+
+  var viewers = new Map();
+  var boss = { max: 100, hp: 100, flash: 0, shake: 0, dead: false };
+  var feed = [];
+  var pops = [];
+  var T = 0;
+
+  function hueOf(name) {
+    var h = 0;
+    for (var i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+    return h;
+  }
+  function pushFeed(t) {
+    feed.push({ t: t, age: 0 });
+    if (feed.length > 4) feed.shift();
+  }
+
+  // Rule: 10 likes from one viewer = a stickman with 1 damage.
+  // Every further 10 likes from that same viewer = +1 damage.
+  function addLikes(name, count) {
+    name = String(name == null ? '' : name).trim().slice(0, 14) || 'viewer';
+    count = Math.floor(Number(count));
+    if (!(count > 0)) return;
+    var v = viewers.get(name);
+    if (!v) {
+      v = { name: name, likes: 0, dmg: 0, dealt: 0, cd: Math.random() * ATTACK, anim: 0, hue: hueOf(name) };
+      viewers.set(name, v);
+    }
+    v.likes += count;
+    var nd = Math.floor(v.likes / 10);
+    if (nd > v.dmg) {
+      var first = v.dmg === 0;
+      v.dmg = nd;
+      pushFeed(first ? name + ' joins: ' + nd + ' dmg' : name + ' now ' + nd + ' dmg');
+    }
+  }
+  window.addLikes = addLikes;
+
+  function hit(v) {
+    var d = Math.min(v.dmg, boss.hp);
+    if (d <= 0) return;
+    boss.hp -= d;
+    v.dealt += d;
+    boss.flash = 0.12;
+    boss.shake = 0.15;
+    v.anim = 0.2;
+    pops.push({ x: 120 + Math.random() * 110, y: 150 + Math.random() * 60, t: 0, txt: '-' + d });
+    if (pops.length > 60) pops.shift();
+    if (boss.hp <= 0) {
+      boss.dead = true;
+      pushFeed('Boss defeated!');
+    }
+  }
+
+  function active() {
+    var out = [];
+    viewers.forEach(function (v) { if (v.dmg > 0) out.push(v); });
+    return out;
+  }
+
+  function update(dt) {
+    boss.flash = Math.max(0, boss.flash - dt);
+    boss.shake = Math.max(0, boss.shake - dt);
+    for (var i = feed.length - 1; i >= 0; i--) {
+      feed[i].age += dt;
+      if (feed[i].age > 6) feed.splice(i, 1);
+    }
+    for (var j = pops.length - 1; j >= 0; j--) {
+      pops[j].t += dt;
+      if (pops[j].t > 0.8) pops.splice(j, 1);
+    }
+    viewers.forEach(function (v) {
+      v.anim = Math.max(0, v.anim - dt);
+      if (v.dmg > 0 && !boss.dead) {
+        v.cd -= dt;
+        if (v.cd <= 0) {
+          v.cd += ATTACK;
+          hit(v);
+        }
+      }
+    });
+  }
+
+  function text(s, x, y, size, color, align) {
+    g.font = size + 'px ' + PIX;
+    g.fillStyle = color;
+    g.textAlign = align || 'left';
+    g.textBaseline = 'alphabetic';
+    g.fillText(s, x, y);
+  }
+
+  function sprite(x, y, s, white) {
+    for (var r = 0; r < SPR.length; r++) {
+      var row = SPR[r];
+      for (var c = 0; c < row.length; c++) {
+        var k = row[c];
+        if (k === '.') continue;
+        g.fillStyle = white ? '#ffffff' : PAL[k];
+        g.fillRect(x + c * s, y + r * s, s, s);
+      }
+    }
+  }
+
+  function stick(x, y, v) {
+    var lunge = v.anim > 0 ? Math.round(6 * Math.sin((v.anim / 0.2) * Math.PI)) : 0;
+    var bob = Math.round(Math.sin(T * 3 + v.hue) * 1.5);
+    y = Math.round(y - lunge + bob);
+    var col = 'hsl(' + v.hue + ' 70% 62%)';
+    g.fillStyle = col;
+    g.fillRect(x - 4, y, 8, 8);
+    g.fillRect(x - 1, y + 8, 2, 12);
+    g.fillRect(x + 1, y + 11, 6, 2);
+    if (v.anim > 0) {
+      g.fillRect(x - 7, y + 4, 6, 2);
+      g.fillStyle = '#e9ecf5';
+      g.fillRect(x - 9, y - 8, 2, 12);
+    } else {
+      g.fillRect(x - 7, y + 11, 6, 2);
+    }
+    g.fillStyle = col;
+    g.fillRect(x - 4, y + 20, 2, 8);
+    g.fillRect(x + 2, y + 20, 2, 8);
+    text(String(v.dmg), x + 7, y + 8, 7, C.accent, 'left');
+    text(v.name.slice(0, 6), x, y + 39 - bob, 7, C.fg, 'center');
+  }
+
+  function render() {
+    g.globalAlpha = 1;
+    g.fillStyle = C.bg;
+    g.fillRect(0, 0, W, H);
+    g.fillStyle = C.ground;
+    g.fillRect(0, 318, W, H - 318);
+    g.fillStyle = C.line;
+    g.fillRect(0, 318, W, 2);
+
+    text('GRUMPUS', W / 2, 22, 10, C.fg, 'center');
+    g.fillStyle = C.hpBack;
+    g.fillRect(20, 32, 320, 16);
+    g.fillStyle = C.hp;
+    g.fillRect(20, 32, Math.round(320 * (boss.hp / boss.max)), 16);
+    g.strokeStyle = C.fg;
+    g.lineWidth = 2;
+    g.strokeRect(19, 31, 322, 18);
+    text(boss.hp + ' / ' + boss.max, W / 2, 66, 8, C.fg, 'center');
+
+    var sx = reduce || boss.shake <= 0 ? 0 : (Math.random() - 0.5) * 6;
+    var by = 100 + Math.sin(T * 2) * 3;
+    g.globalAlpha = boss.dead ? 0.3 : 1;
+    sprite(Math.round(108 + sx), Math.round(by), 9, boss.flash > 0);
+    g.globalAlpha = 1;
+
+    for (var i = 0; i < feed.length; i++) {
+      g.globalAlpha = Math.max(0, 1 - feed[i].age / 6);
+      text(feed[i].t, 10, 276 + i * 12, 7, C.muted, 'left');
+    }
+    g.globalAlpha = 1;
+
+    for (var p = 0; p < pops.length; p++) {
+      var q = pops[p];
+      g.globalAlpha = Math.max(0, 1 - q.t / 0.8);
+      text(q.txt, q.x, q.y - q.t * 40, 10, C.accent, 'left');
+    }
+    g.globalAlpha = 1;
+
+    var list = active();
+    if (!list.length) {
+      text('Waiting for likes...', W / 2, 400, 9, C.muted, 'center');
+      text('10 likes = 1 stickman', W / 2, 420, 8, C.muted, 'center');
+    }
+    for (var k = 0; k < list.length && k < CAP; k++) {
+      var cw = W / COLS;
+      stick((k % COLS + 0.5) * cw, 332 + Math.floor(k / COLS) * 44, list[k]);
+    }
+    if (list.length > CAP) text('+' + (list.length - CAP) + ' more', W - 10, 566, 7, C.muted, 'right');
+
+    var top = [];
+    viewers.forEach(function (v) { if (v.dealt > 0) top.push(v); });
+    top.sort(function (a, b) { return b.dealt - a.dealt; });
+    for (var t = 0; t < 3 && t < top.length; t++) {
+      text((t + 1) + '. ' + top[t].name.slice(0, 10) + ' ' + top[t].dealt, 10, 566 + t * 12, 7, C.fg, 'left');
+    }
+
+    if (boss.dead) {
+      g.fillStyle = 'rgba(10,12,20,0.75)';
+      g.fillRect(0, 130, W, 120);
+      text('BOSS DOWN', W / 2, 180, 20, C.accent, 'center');
+      if (top.length) text('Top: ' + top[0].name.slice(0, 10) + ' ' + top[0].dealt, W / 2, 214, 8, C.fg, 'center');
+    }
+  }
+
+  var last = performance.now();
+  function frame(now) {
+    var dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    T += dt;
+    update(dt);
+    render();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // Test panel
+  var panel = document.getElementById('panel');
+  var nameEl = document.getElementById('name');
+  var maxEl = document.getElementById('maxhp');
+  function nm() { return nameEl.value; }
+  document.getElementById('b1').addEventListener('click', function () { addLikes(nm(), 1); });
+  document.getElementById('b10').addEventListener('click', function () { addLikes(nm(), 10); });
+  document.getElementById('b50').addEventListener('click', function () { addLikes(nm(), 50); });
+  var POOL = ['sam', 'kai', 'lia', 'mo', 'ana', 'jun', 'rey', 'bea', 'tin', 'eli', 'noa', 'ike'];
+  document.getElementById('rand').addEventListener('click', function () {
+    addLikes(POOL[Math.floor(Math.random() * POOL.length)], 10);
+  });
+  document.getElementById('crowd').addEventListener('click', function () {
+    for (var i = 0; i < 10; i++) addLikes('fan' + (i + 1), 10);
+  });
+  function newBoss() {
+    var m = Math.floor(Number(maxEl.value));
+    if (!(m >= 1)) m = 100;
+    m = Math.min(m, 100000);
+    maxEl.value = m;
+    boss.max = m;
+    boss.hp = m;
+    boss.dead = false;
+    boss.flash = 0;
+    boss.shake = 0;
+    pops.length = 0;
+    pushFeed('New boss: ' + m + ' HP');
+  }
+  document.getElementById('newboss').addEventListener('click', newBoss);
+  document.getElementById('reset').addEventListener('click', function () {
+    viewers.clear();
+    feed.length = 0;
+    newBoss();
+    feed.length = 0;
+  });
+
+  // Live connection: the server that served this page sends each like as a message
+  var statusEl = document.getElementById('status');
+  var ttEl = document.getElementById('tt');
+  var ws = null;
+  var wantUser = '';
+  var qs = new URLSearchParams(location.search);
+  try { ttEl.value = localStorage.getItem('ttUser') || ''; } catch (e) {}
+  if (qs.get('user')) { ttEl.value = qs.get('user'); wantUser = qs.get('user').trim().replace(/^@/, ''); }
+  function setStatus(t) { statusEl.textContent = t; }
+  function serverUrl() {
+    var s = qs.get('server');
+    if (s) return s;
+    if (location.protocol === 'http:' || location.protocol === 'https:') {
+      return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+    }
+    return '';
+  }
+  function sendConnect() {
+    if (ws && ws.readyState === 1 && wantUser) ws.send(JSON.stringify({ type: 'connect', user: wantUser }));
+  }
+  function openWs() {
+    var url = serverUrl();
+    if (!url) { setStatus('No server address. Open this page from your server.'); return; }
+    try { ws = new WebSocket(url); } catch (e) { setStatus('Could not open the server connection.'); return; }
+    ws.onopen = function () { setStatus('Server reachable.'); sendConnect(); };
+    ws.onmessage = function (ev) {
+      var m;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.type === 'like') addLikes(m.name, m.count);
+      else if (m.type === 'status') setStatus(m.text);
+    };
+    ws.onclose = function () { setStatus('Server connection lost. Retrying...'); setTimeout(openWs, 3000); };
+  }
+  document.getElementById('connect').addEventListener('click', function () {
+    wantUser = ttEl.value.trim().replace(/^@/, '');
+    if (!wantUser) { setStatus('Type your TikTok username first.'); return; }
+    try { localStorage.setItem('ttUser', wantUser); } catch (e) {}
+    setStatus('Connecting to @' + wantUser + '...');
+    sendConnect();
+  });
+  openWs();
+
+  // Secret command: double-tap the arena to hide or show the panel
+  var lastTap = 0;
+  cv.addEventListener('pointerdown', function () {
+    var n = performance.now();
+    if (n - lastTap < 350) {
+      panel.hidden = !panel.hidden;
+      lastTap = 0;
+    } else {
+      lastTap = n;
+    }
+  });
+})();
+</script>
